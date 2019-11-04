@@ -481,7 +481,33 @@ namespace Google.Protobuf
         /// </summary>
         public double ReadDouble()
         {
-            return BitConverter.Int64BitsToDouble((long) ReadRawLittleEndian64());
+            if (bufferPos + 8 <= bufferSize)
+            {
+                if (BitConverter.IsLittleEndian)
+                {
+                    var result = BitConverter.ToDouble(buffer, bufferPos);
+                    bufferPos += 8;
+                    return result;
+                }
+                else
+                {
+                    var bytes = new byte[8];
+                    bytes[0] = buffer[bufferPos + 7];
+                    bytes[1] = buffer[bufferPos + 6];
+                    bytes[2] = buffer[bufferPos + 5];
+                    bytes[3] = buffer[bufferPos + 4];
+                    bytes[4] = buffer[bufferPos + 3];
+                    bytes[5] = buffer[bufferPos + 2];
+                    bytes[6] = buffer[bufferPos + 1];
+                    bytes[7] = buffer[bufferPos];
+                    bufferPos += 8;
+                    return BitConverter.ToDouble(bytes, 0);
+                }
+            }
+            else
+            {
+                return BitConverter.Int64BitsToDouble((long)ReadRawLittleEndian64());
+            }
         }
 
         /// <summary>
@@ -711,7 +737,112 @@ namespace Google.Protobuf
             return false;
         }
 
-        #endregion
+        internal static double? ReadDoubleWrapperLittleEndian(CodedInputStream input)
+        {
+            if (input.bufferPos + 10 <= input.bufferSize)
+            {
+                int length = input.buffer[input.bufferPos];
+                if (length == 0)
+                {
+                    return 0D;
+                }
+                if (length != 9)
+                {
+                    throw new Exception("Malformed wrapper");
+                }
+                if (input.buffer[input.bufferPos + 1] != 9)
+                {
+                    throw new Exception("Incorrect wrapper tag");
+                }
+                var result = BitConverter.ToDouble(input.buffer, input.bufferPos + 2);
+                input.bufferPos += 10;
+                return result;
+            }
+            else
+            {
+                int length = input.ReadLength();
+                if (length == 0)
+                {
+                    return 0D;
+                }
+                if (length != 9)
+                {
+                    throw new Exception("Malformed wrapper");
+                }
+                if (input.ReadTag() != 9)
+                {
+                    throw new Exception("Incorrect wrapper tag");
+                }
+                return input.ReadDouble();
+            }
+        }
+
+        internal static double? ReadDoubleWrapperBigEndian(CodedInputStream input)
+        {
+            int length = input.ReadLength();
+            if (length == 0)
+            {
+                return 0D;
+            }
+            if (length != 9)
+            {
+                throw new Exception("Malformed wrapper");
+            }
+            if (input.ReadTag() != 9)
+            {
+                throw new Exception("Incorrect wrapper tag");
+            }
+            return input.ReadDouble();
+        }
+
+        internal static long? ReadInt64Wrapper(CodedInputStream input)
+        {
+            if (input.bufferPos + 12 <= input.bufferSize)
+            {
+                int length = input.buffer[input.bufferPos];
+                if (length == 0)
+                {
+                    return 0L;
+                }
+                if (length >= 128)
+                {
+                    throw new Exception("Malformed wrapper");
+                }
+                int finalBufferPos = input.bufferPos + length + 1;
+                if (input.buffer[input.bufferPos + 1] != 8)
+                {
+                    throw new Exception("Incorrect wrapper tag");
+                }
+                input.bufferPos += 2;
+                var result = input.ReadInt64();
+                if (input.bufferPos != finalBufferPos)
+                {
+                    throw new Exception("Malformed wrapper 1");
+                }
+                return result;
+            }
+            else
+            {
+                int length = input.ReadLength();
+                if (length == 0)
+                {
+                    return 0L;
+                }
+                int finalBufferPos = input.totalBytesRetired + input.bufferPos + length;
+                if (input.ReadTag() != 9)
+                {
+                    throw new Exception("Incorrect wrapper tag");
+                }
+                var result = input.ReadInt64();
+                if (input.totalBytesRetired + input.bufferPos != finalBufferPos)
+                {
+                    throw new Exception("Malformed wrapper 2");
+                }
+                return result;
+            }
+        }
+        
+#endregion
 
         #region Underlying reading primitives
 
@@ -876,17 +1007,42 @@ namespace Google.Protobuf
         /// </summary>
         internal ulong ReadRawVarint64()
         {
-            int shift = 0;
-            ulong result = 0;
-            while (shift < 64)
+            if (bufferPos + 10 <= bufferSize)
             {
-                byte b = ReadRawByte();
-                result |= (ulong) (b & 0x7F) << shift;
-                if ((b & 0x80) == 0)
+                ulong result = buffer[bufferPos++];
+                if (result < 128)
                 {
                     return result;
                 }
-                shift += 7;
+                result &= 0x7f;
+                int shift = 7;
+                do
+                {
+                    byte b = buffer[bufferPos++];
+                    result |= (ulong)(b & 0x7F) << shift;
+                    if (b < 0x80)
+                    {
+                        return result;
+                    }
+                    shift += 7;
+                }
+                while (shift < 64 - 7);
+            }
+            else
+            {
+                int shift = 0;
+                ulong result = 0;
+                do
+                {
+                    byte b = ReadRawByte();
+                    result |= (ulong)(b & 0x7F) << shift;
+                    if (b < 0x80)
+                    {
+                        return result;
+                    }
+                    shift += 7;
+                }
+                while (shift < 64 - 7);
             }
             throw InvalidProtocolBufferException.MalformedVarint();
         }
@@ -896,11 +1052,32 @@ namespace Google.Protobuf
         /// </summary>
         internal uint ReadRawLittleEndian32()
         {
-            uint b1 = ReadRawByte();
-            uint b2 = ReadRawByte();
-            uint b3 = ReadRawByte();
-            uint b4 = ReadRawByte();
-            return b1 | (b2 << 8) | (b3 << 16) | (b4 << 24);
+            if (bufferPos + 4 <= bufferSize)
+            {
+                if (BitConverter.IsLittleEndian)
+                {
+                    var result = BitConverter.ToUInt32(buffer, bufferPos);
+                    bufferPos += 4;
+                    return result;
+                }
+                else
+                {
+                    uint b1 = buffer[bufferPos];
+                    uint b2 = buffer[bufferPos + 1];
+                    uint b3 = buffer[bufferPos + 2];
+                    uint b4 = buffer[bufferPos + 3];
+                    bufferPos += 4;
+                    return b1 | (b2 << 8) | (b3 << 16) | (b4 << 24);
+                }
+            }
+            else
+            {
+                uint b1 = ReadRawByte();
+                uint b2 = ReadRawByte();
+                uint b3 = ReadRawByte();
+                uint b4 = ReadRawByte();
+                return b1 | (b2 << 8) | (b3 << 16) | (b4 << 24);
+            }
         }
 
         /// <summary>
@@ -908,16 +1085,42 @@ namespace Google.Protobuf
         /// </summary>
         internal ulong ReadRawLittleEndian64()
         {
-            ulong b1 = ReadRawByte();
-            ulong b2 = ReadRawByte();
-            ulong b3 = ReadRawByte();
-            ulong b4 = ReadRawByte();
-            ulong b5 = ReadRawByte();
-            ulong b6 = ReadRawByte();
-            ulong b7 = ReadRawByte();
-            ulong b8 = ReadRawByte();
-            return b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)
-                   | (b5 << 32) | (b6 << 40) | (b7 << 48) | (b8 << 56);
+            if (bufferPos + 8 <= bufferSize)
+            {
+                if (BitConverter.IsLittleEndian)
+                {
+                    var result = BitConverter.ToUInt64(buffer, bufferPos);
+                    bufferPos += 8;
+                    return result;
+                }
+                else
+                {
+                    ulong b1 = buffer[bufferPos];
+                    ulong b2 = buffer[bufferPos + 1];
+                    ulong b3 = buffer[bufferPos + 2];
+                    ulong b4 = buffer[bufferPos + 3];
+                    ulong b5 = buffer[bufferPos + 4];
+                    ulong b6 = buffer[bufferPos + 5];
+                    ulong b7 = buffer[bufferPos + 6];
+                    ulong b8 = buffer[bufferPos + 7];
+                    bufferPos += 8;
+                    return b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)
+                           | (b5 << 32) | (b6 << 40) | (b7 << 48) | (b8 << 56);
+                }
+            }
+            else
+            {
+                ulong b1 = ReadRawByte();
+                ulong b2 = ReadRawByte();
+                ulong b3 = ReadRawByte();
+                ulong b4 = ReadRawByte();
+                ulong b5 = ReadRawByte();
+                ulong b6 = ReadRawByte();
+                ulong b7 = ReadRawByte();
+                ulong b8 = ReadRawByte();
+                return b1 | (b2 << 8) | (b3 << 16) | (b4 << 24)
+                       | (b5 << 32) | (b6 << 40) | (b7 << 48) | (b8 << 56);
+            }
         }
 
         /// <summary>
@@ -947,9 +1150,9 @@ namespace Google.Protobuf
         {
             return (long)(n >> 1) ^ -(long)(n & 1);
         }
-        #endregion
+#endregion
 
-        #region Internal reading and buffer management
+#region Internal reading and buffer management
 
         /// <summary>
         /// Sets currentLimit to (current position) + byteLimit. This is called
@@ -1301,6 +1504,6 @@ namespace Google.Protobuf
                 }
             }
         }
-        #endregion
+#endregion
     }
 }

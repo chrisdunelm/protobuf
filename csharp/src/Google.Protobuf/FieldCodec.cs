@@ -506,8 +506,24 @@ namespace Google.Protobuf
         public static FieldCodec<T?> ForStructWrapper<T>(uint tag) where T : struct
         {
             var nestedCodec = WrapperCodecs.GetCodec<T>();
+            Func<CodedInputStream, T?> fnRead;
+            if (typeof(T) == typeof(double))
+            {
+                fnRead =
+                    BitConverter.IsLittleEndian ?
+                        (Func<CodedInputStream, T?>)(object)(Func<CodedInputStream, double?>)CodedInputStream.ReadDoubleWrapperLittleEndian :
+                        (Func<CodedInputStream, T?>)(object)(Func<CodedInputStream, double?>)CodedInputStream.ReadDoubleWrapperBigEndian;
+            }
+            else if (typeof(T) == typeof(long))
+            {
+                fnRead = (Func<CodedInputStream, T?>)(object)(Func<CodedInputStream, long?>)CodedInputStream.ReadInt64Wrapper;
+            }
+            else
+            {
+                fnRead = input => WrapperCodecs.Read<T>(input, nestedCodec);
+            }
             return new FieldCodec<T?>(
-                input => WrapperCodecs.Read<T>(input, nestedCodec),
+                fnRead,
                 (output, value) => WrapperCodecs.Write<T>(output, value.Value, nestedCodec),
                 (CodedInputStream i, ref T? v) => v = WrapperCodecs.Read<T>(i, nestedCodec),
                 (ref T? v, T? v2) => { if (v2.HasValue) { v = v2; } return v.HasValue; },
